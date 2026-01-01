@@ -16,6 +16,9 @@ if (!MONGODB_URI) {
 const app = express();
 app.use(express.json());
 
+const asyncHandler = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch(next);
+
 const EntrySchema = new mongoose.Schema(
   {
     workout: String,
@@ -104,7 +107,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/users", async (_req, res) => {
+app.get("/api/users", asyncHandler(async (_req, res) => {
   const users = await User.find().lean();
   if (!users.length) {
     await User.insertMany(defaultUsers);
@@ -112,9 +115,9 @@ app.get("/api/users", async (_req, res) => {
     return res.json(seeded.map(formatUser));
   }
   return res.json(users.map(formatUser));
-});
+}));
 
-app.put("/api/users", async (req, res) => {
+app.put("/api/users", asyncHandler(async (req, res) => {
   const incoming = Array.isArray(req.body)
     ? req.body
     : req.body?.users;
@@ -138,17 +141,17 @@ app.put("/api/users", async (req, res) => {
 
   const users = await User.find().lean();
   return res.json(users.map(formatUser));
-});
+}));
 
-app.get("/api/messages", async (_req, res) => {
+app.get("/api/messages", asyncHandler(async (_req, res) => {
   const since = new Date(Date.now() - MESSAGE_TTL_SECONDS * 1000);
   const messages = await Message.find({ createdAt: { $gte: since } })
     .sort({ createdAt: 1 })
     .lean();
   res.json(messages.map(formatMessage));
-});
+}));
 
-app.post("/api/messages", async (req, res) => {
+app.post("/api/messages", asyncHandler(async (req, res) => {
   const user = req.body?.user?.trim();
   const text = req.body?.text?.trim();
   if (!user || !text) {
@@ -156,6 +159,11 @@ app.post("/api/messages", async (req, res) => {
   }
   const message = await Message.create({ user, text });
   res.status(201).json(formatMessage(message));
+}));
+
+app.use((err, req, res, next) => {
+  console.error('API error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 const start = async () => {
