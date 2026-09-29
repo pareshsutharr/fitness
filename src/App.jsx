@@ -1,64 +1,33 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Header from "./components/Header.jsx";
-import Tabs from "./components/Tabs.jsx";
-import LoginPanel from "./components/LoginPanel.jsx";
-import Dashboard from "./components/Dashboard.jsx";
+import Nav from "./components/Nav.jsx";
+import HomePanel from "./components/HomePanel.jsx";
 import CalendarPanel from "./components/CalendarPanel.jsx";
+import ProfilePanel from "./components/ProfilePanel.jsx";
 import Modal from "./components/Modal.jsx";
-import { formatLongDate, parseDateKey, toDateKey } from "./utils/date.js";
-
-const REFERENCE_YEAR = 2026;
-const baseDate = new Date(REFERENCE_YEAR, 0, 1);
-
-const buildEntry = (data) => {
-  const time = new Date(baseDate);
-  time.setDate(baseDate.getDate() + (data.dayOffset ?? 0));
-  time.setHours(data.hour ?? 9, 0, 0, 0);
-  return {
-    workout: data.workout,
-    duration: data.duration,
-    intensity: data.intensity,
-    notes: data.notes,
-    time,
-    dateKey: toDateKey(time)
-  };
-};
-
-const buildUsers = () => [
-  {
-    name: "Jahnvi",
-    initials: "JA",
-    color: "coral",
-    vibe: "Strength + dance",
-    total: 0,
-    streak: 0,
-    badges: 0,
-    entries: []
-  },
-  {
-    name: "Divesh",
-    initials: "DI",
-    color: "mint",
-    vibe: "Cardio + core",
-    total: 0,
-    streak: 0,
-    badges: 0,
-    entries: []
-  },
-  {
-    name: "Paresh",
-    initials: "PA",
-    color: "sun",
-    vibe: "Mobility + strength",
-    total: 0,
-    streak: 0,
-    badges: 0,
-    entries: []
-  }
-];
+import Toasts from "./components/Toasts.jsx";
+import { api } from "./api.js";
+import { todayKey as getTodayKey } from "./utils/date.js";
 
 const ACTIVE_USER_KEY = "fitquestActiveUser";
 const THEME_KEY = "fitquestTheme";
+const REFRESH_MS = 30000;
+
+const readStorage = (key) => {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const writeStorage = (key, value) => {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (_error) {
+    /* ignore */
+  }
+};
 
 const normalizeUsers = (items) =>
   items.map((user) => ({
@@ -66,274 +35,229 @@ const normalizeUsers = (items) =>
     entries: Array.isArray(user.entries)
       ? user.entries.map((entry) => ({
           ...entry,
-          time: entry.time
-            ? new Date(entry.time)
-            : entry.dateKey
-              ? parseDateKey(entry.dateKey)
-              : new Date()
+          time: entry.time ? new Date(entry.time) : null
         }))
       : []
   }));
 
-const getEntryForDate = (user, dateKey) =>
-  user.entries.find((entry) => entry.dateKey === dateKey);
-
-const getReferenceDate = () => {
-  const now = new Date();
-  if (now < baseDate) {
-    return new Date(baseDate);
-  }
-  return now;
-};
-
 export default function App() {
-  const [users, setUsers] = useState(buildUsers);
-  const [hasLoadedUsers, setHasLoadedUsers] = useState(false);
-  const [activeUserName, setActiveUserName] = useState("Jahnvi");
-  const hasInitializedActiveRef = useRef(false);
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [users, setUsers] = useState([]);
+  const [status, setStatus] = useState("loading"); // loading | ready | error
+  const [loadError, setLoadError] = useState("");
+  const [activeUserName, setActiveUserName] = useState(() => readStorage(ACTIVE_USER_KEY) || "");
+  const [tab, setTab] = useState("home");
   const [theme, setTheme] = useState(() => {
-    if (typeof window === "undefined") return "dark";
-    const cached = window.localStorage.getItem(THEME_KEY);
+    const cached = readStorage(THEME_KEY);
     return cached === "light" || cached === "dark" ? cached : "dark";
   });
-  const [modalState, setModalState] = useState({
-    open: false,
-    view: "form",
-    dateKey: null
-  });
+  const [modal, setModal] = useState({ open: false, dateKey: null });
+  const [toasts, setToasts] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [today, setToday] = useState(getTodayKey);
+  const pendingDeepLink = useRef(new URLSearchParams(window.location.search).get("log") === "today");
 
-  const activeUser = useMemo(
-    () => users.find((user) => user.name === activeUserName) ?? users[0],
-    [users, activeUserName]
-  );
-  const referenceDate = useMemo(() => getReferenceDate(), []);
-  const referenceKey = useMemo(
-    () => toDateKey(referenceDate),
-    [referenceDate]
-  );
+  const pushToast = useCallback((message, tone = "info") => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setToasts((prev) => [...prev, { id, message, tone }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, 3800);
+  }, []);
+
+  const loadUsers = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setStatus((prev) => (prev === "ready" ? prev : "loading"));
+    try {
+      const data = await api.users();
+      const list = Array.isArray(data?.users) ? data.users : Array.isArray(data) ? data : [];
+      setUsers(normalizeUsers(list));
+      setStatus("ready");
+      setLoadError("");
+    } catch (error) {
+      if (!silent) {
+        setStatus("error");
+        setLoadError(error.message || "Could not reach the server.");
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    let isActive = true;
-    const loadUsers = async () => {
-      try {
-        const response = await fetch("/api/users");
-        if (!response.ok) {
-          throw new Error("Failed to load users");
-        }
-        const data = await response.json();
-        if (isActive) {
-          const nextUsers = Array.isArray(data) ? normalizeUsers(data) : buildUsers();
-          setUsers(nextUsers);
-          setHasLoadedUsers(true);
-        }
-      } catch (error) {
-        console.error(error);
-        if (isActive) {
-          setHasLoadedUsers(true);
-        }
+    loadUsers();
+  }, [loadUsers]);
+
+  // Keep friends' progress fresh without hammering the API.
+  useEffect(() => {
+    if (status !== "ready") return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadUsers({ silent: true });
+    }, REFRESH_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        setToday(getTodayKey());
+        loadUsers({ silent: true });
       }
     };
-    loadUsers();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      isActive = false;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
+  }, [status, loadUsers]);
+
+  // Roll the day over at midnight while the app is open.
+  useEffect(() => {
+    const tick = window.setInterval(() => setToday(getTodayKey()), 60000);
+    return () => window.clearInterval(tick);
   }, []);
 
   useEffect(() => {
     if (!users.length) return;
-    if (!hasInitializedActiveRef.current) {
-      const cached =
-        typeof window === "undefined"
-          ? null
-          : window.localStorage.getItem(ACTIVE_USER_KEY);
-      if (cached && users.some((user) => user.name === cached)) {
-        setActiveUserName(cached);
-      } else {
-        setActiveUserName(users[0].name);
-      }
-      hasInitializedActiveRef.current = true;
-      return;
-    }
     if (!users.some((user) => user.name === activeUserName)) {
       setActiveUserName(users[0].name);
     }
   }, [users, activeUserName]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!activeUserName) return;
-    window.localStorage.setItem(ACTIVE_USER_KEY, activeUserName);
+    if (activeUserName) writeStorage(ACTIVE_USER_KEY, activeUserName);
   }, [activeUserName]);
 
   useLayoutEffect(() => {
-    if (typeof document === "undefined") return;
     document.body.dataset.theme = theme;
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(THEME_KEY, theme);
-    }
+    writeStorage(THEME_KEY, theme);
   }, [theme]);
 
+  const activeUser = useMemo(
+    () => users.find((user) => user.name === activeUserName) ?? users[0] ?? null,
+    [users, activeUserName]
+  );
+
+  // Notification tap deep link: open today's log form once data is ready.
   useEffect(() => {
-    if (!hasLoadedUsers) return;
-    const controller = new AbortController();
-    const saveUsers = async () => {
-      try {
-        await fetch("/api/users", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ users }),
-          signal: controller.signal
-        });
-      } catch (error) {
-        if (error.name !== "AbortError") {
-          console.error(error);
-        }
-      }
-    };
-    saveUsers();
-    return () => controller.abort();
-  }, [users, hasLoadedUsers]);
+    if (status !== "ready" || !activeUser || !pendingDeepLink.current) return;
+    pendingDeepLink.current = false;
+    setModal({ open: true, dateKey: today });
+    window.history.replaceState({}, "", window.location.pathname);
+  }, [status, activeUser, today]);
 
-  const openModal = (dateKey) => {
-    const entry = getEntryForDate(activeUser, dateKey);
-    const view =
-      dateKey === referenceKey ? "form" : entry ? "details" : "missed";
-    setModalState({ open: true, view, dateKey });
+  const openLog = useCallback((dateKey) => {
+    if (!dateKey || dateKey > getTodayKey()) return;
+    setModal({ open: true, dateKey });
+  }, []);
+
+  const closeModal = useCallback(() => setModal({ open: false, dateKey: null }), []);
+
+  const replaceUser = useCallback((nextUser) => {
+    const [normalized] = normalizeUsers([nextUser]);
+    setUsers((prev) => prev.map((user) => (user.name === normalized.name ? normalized : user)));
+  }, []);
+
+  const handleSaveEntry = async (dateKey, data) => {
+    if (!activeUser || saving) return;
+    setSaving(true);
+    try {
+      const result = await api.saveEntry(activeUser.name, dateKey, data);
+      replaceUser(result.user);
+      closeModal();
+      pushToast(dateKey === today ? "Today's workout logged. Nice work!" : "Workout saved.", "success");
+    } catch (error) {
+      pushToast(error.message || "Could not save the workout.", "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const closeModal = () =>
-    setModalState({ open: false, view: "form", dateKey: null });
-
-  const handleEdit = () =>
-    setModalState((prev) => ({ ...prev, view: "form" }));
-
-  const handleSaveEntry = (dateKey, data) => {
-    if (!dateKey) return;
-
-    setUsers((prev) =>
-      prev.map((user) => {
-        if (user.name !== activeUser.name) return user;
-        const entries = [...user.entries];
-        const existingIndex = entries.findIndex(
-          (entry) => entry.dateKey === dateKey
-        );
-        const entryDate = parseDateKey(dateKey);
-        const time =
-          dateKey === referenceKey ? new Date(referenceDate) : entryDate;
-        const nextEntry = {
-          workout: data.workout.trim(),
-          duration: data.duration.trim(),
-          intensity: data.intensity,
-          notes: data.notes.trim(),
-          dateKey,
-          time
-        };
-
-        if (existingIndex >= 0) {
-          entries[existingIndex] = nextEntry;
-        } else {
-          entries.unshift(nextEntry);
-        }
-
-        const gainedBadge =
-          existingIndex < 0 && data.intensity === "Beast mode" ? 1 : 0;
-
-        return {
-          ...user,
-          entries,
-          total: existingIndex < 0 ? user.total + 1 : user.total,
-          streak: existingIndex < 0 ? user.streak + 1 : user.streak,
-          badges: user.badges + gainedBadge
-        };
-      })
-    );
-
-    closeModal();
+  const handleDeleteEntry = async (dateKey) => {
+    if (!activeUser || saving) return;
+    setSaving(true);
+    try {
+      const result = await api.deleteEntry(activeUser.name, dateKey);
+      replaceUser(result.user);
+      closeModal();
+      pushToast("Workout removed.", "info");
+    } catch (error) {
+      pushToast(error.message || "Could not remove the workout.", "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDeleteEntry = (dateKey) => {
-    if (!dateKey) return;
-
-    setUsers((prev) =>
-      prev.map((user) => {
-        if (user.name !== activeUser.name) return user;
-        const targetEntry = user.entries.find(
-          (entry) => entry.dateKey === dateKey
-        );
-        if (!targetEntry) return user;
-
-        const entries = user.entries.filter(
-          (entry) => entry.dateKey !== dateKey
-        );
-        const lostBadge = targetEntry.intensity === "Beast mode" ? 1 : 0;
-
-        return {
-          ...user,
-          entries,
-          total: Math.max(0, user.total - 1),
-          streak: Math.max(0, user.streak - 1),
-          badges: Math.max(0, user.badges - lostBadge)
-        };
-      })
-    );
-
-    closeModal();
-  };
-
-  const handleToggleTheme = () =>
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  const modalEntry = useMemo(() => {
+    if (!modal.dateKey || !activeUser) return null;
+    return activeUser.entries.find((entry) => entry.dateKey === modal.dateKey) ?? null;
+  }, [modal.dateKey, activeUser]);
 
   return (
     <div className="app-shell">
-      <div className="bg-layer bg-layer--left"></div>
-      <div className="bg-layer bg-layer--right"></div>
+      <div className="bg-glow bg-glow--a" aria-hidden="true" />
+      <div className="bg-glow bg-glow--b" aria-hidden="true" />
       <main className="app">
-        <Header theme={theme} onToggleTheme={handleToggleTheme} />
-        <Tabs activeTab={activeTab} onChange={setActiveTab} />
-        {activeTab === "user" ? (
-          <LoginPanel
-            users={users}
-            activeUser={activeUser}
-            onSelectUser={setActiveUserName}
-          />
+        <Header
+          theme={theme}
+          onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+          activeUser={activeUser}
+          onOpenProfile={() => setTab("profile")}
+        />
+        <Nav active={tab} onChange={setTab} />
+
+        {status === "loading" && !users.length ? (
+          <section className="panel state-panel" aria-busy="true">
+            <div className="spinner" aria-hidden="true" />
+            <p>Loading the squad…</p>
+          </section>
         ) : null}
 
-        {activeTab === "dashboard" ? (
-          <Dashboard
-            users={users}
-            activeUserName={activeUserName}
-            onSenderChange={setActiveUserName}
-          />
-        ) : (
-          <CalendarPanel
-            user={activeUser}
-            onDayClick={openModal}
-            referenceDate={referenceDate}
-          />
-        )}
+        {status === "error" && !users.length ? (
+          <section className="panel state-panel is-error" role="alert">
+            <h2>Can't reach the server</h2>
+            <p className="muted">{loadError}</p>
+            <p className="muted">Nothing was changed. Your data is safe on the server.</p>
+            <button className="cta" type="button" onClick={() => loadUsers()}>
+              Try again
+            </button>
+          </section>
+        ) : null}
+
+        {users.length && activeUser ? (
+          <>
+            {tab === "home" ? (
+              <HomePanel
+                users={users}
+                activeUser={activeUser}
+                today={today}
+                onLog={openLog}
+                onSelectUser={setActiveUserName}
+                onToast={pushToast}
+              />
+            ) : null}
+            {tab === "calendar" ? (
+              <CalendarPanel user={activeUser} today={today} onDayClick={openLog} />
+            ) : null}
+            {tab === "profile" ? (
+              <ProfilePanel
+                users={users}
+                activeUser={activeUser}
+                today={today}
+                onSelectUser={setActiveUserName}
+                theme={theme}
+                onToggleTheme={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+                onToast={pushToast}
+              />
+            ) : null}
+          </>
+        ) : null}
       </main>
 
       <Modal
-        isOpen={modalState.open}
-        view={modalState.view}
-        dateKey={modalState.dateKey}
-        isToday={modalState.dateKey === referenceKey}
-        entry={
-          modalState.dateKey
-            ? getEntryForDate(activeUser, modalState.dateKey)
-            : null
-        }
-        dateLabel={
-          modalState.dateKey
-            ? formatLongDate(parseDateKey(modalState.dateKey))
-            : ""
-        }
+        isOpen={modal.open}
+        dateKey={modal.dateKey}
+        today={today}
+        entry={modalEntry}
+        userName={activeUser?.name}
+        saving={saving}
         onClose={closeModal}
-        onEdit={handleEdit}
         onSave={handleSaveEntry}
         onDelete={handleDeleteEntry}
       />
+      <Toasts items={toasts} />
     </div>
   );
 }

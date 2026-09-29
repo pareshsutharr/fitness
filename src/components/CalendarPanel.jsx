@@ -1,152 +1,126 @@
 import { useMemo, useState } from "react";
-import { formatLongDate, toDateKey } from "../utils/date.js";
+import { buildMonthGrid, summarizeMonth, entryMap, workoutBreakdown } from "../utils/stats.js";
+import { formatLongDate, formatMinutes, monthLabel } from "../utils/date.js";
 
-const buildYearCalendar = (year) => {
-  const months = [];
-  for (let month = 0; month < 12; month += 1) {
-    const firstDay = new Date(year, month, 1);
-    const totalDays = new Date(year, month + 1, 0).getDate();
-    const offset = (firstDay.getDay() + 6) % 7;
-    const days = [];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const FIRST_YEAR = 2026;
 
-    for (let i = 0; i < offset; i += 1) {
-      days.push(null);
-    }
-
-    for (let day = 1; day <= totalDays; day += 1) {
-      days.push(new Date(year, month, day));
-    }
-
-    months.push({
-      label: firstDay.toLocaleDateString(undefined, { month: "long" }),
-      days
-    });
-  }
-
-  return months;
-};
-
-const getEntryForDate = (user, dateKey) =>
-  user.entries.find((entry) => entry.dateKey === dateKey);
-
-export default function CalendarPanel({ user, onDayClick, referenceDate }) {
-  const months = useMemo(() => buildYearCalendar(2026), []);
-  const initialMonth = referenceDate.getMonth();
-  const [monthIndex, setMonthIndex] = useState(initialMonth);
-  const todayKey = toDateKey(referenceDate);
-  const todayStart = new Date(
-    referenceDate.getFullYear(),
-    referenceDate.getMonth(),
-    referenceDate.getDate()
+export default function CalendarPanel({ user, today, onDayClick }) {
+  const [todayYear, todayMonth] = today.split("-").map(Number);
+  const [cursor, setCursor] = useState({ year: todayYear, month: todayMonth - 1 });
+  const entries = useMemo(() => entryMap(user.entries), [user]);
+  const cells = useMemo(() => buildMonthGrid(cursor.year, cursor.month), [cursor]);
+  const summary = summarizeMonth(user.entries, cursor.year, cursor.month);
+  const monthEntries = user.entries.filter((entry) =>
+    entry.dateKey.startsWith(`${cursor.year}-${String(cursor.month + 1).padStart(2, "0")}-`)
   );
-  const month = months[monthIndex];
+  const breakdown = workoutBreakdown(monthEntries, 3);
+
+  const isCurrent = cursor.year === todayYear && cursor.month === todayMonth - 1;
+  const atStart = cursor.year === FIRST_YEAR && cursor.month === 0;
+
+  const move = (delta) => {
+    setCursor((prev) => {
+      const date = new Date(prev.year, prev.month + delta, 1);
+      return { year: date.getFullYear(), month: date.getMonth() };
+    });
+  };
+
+  const daysElapsed = isCurrent ? Number(today.slice(8, 10)) : new Date(cursor.year, cursor.month + 1, 0).getDate();
+  const rate = daysElapsed ? Math.round((summary.days / daysElapsed) * 100) : 0;
 
   return (
-    <section
-      id="panel-user"
-      className="tab-panel is-active"
-      role="tabpanel"
-      aria-labelledby="tab-user"
-    >
-      <section className="panel calendar-panel">
-        <div className="panel-head">
-          <h2>User calendar</h2>
-          <div className="calendar-head">
-            <span>2026</span>
+    <section className="tab-panel" role="tabpanel" aria-label="Calendar">
+      <section className="panel calendar">
+        <div className="panel-head panel-head--wrap">
+          <div>
+            <h2>
+              {user.name}'s calendar
+            </h2>
+            <p className="muted">Tap any past day to log or edit a workout.</p>
+          </div>
+          <div className="month-nav">
+            <button type="button" className="icon-button" onClick={() => move(-1)} disabled={atStart} aria-label="Previous month">
+              ‹
+            </button>
+            <strong>
+              {monthLabel(cursor.year, cursor.month)} {cursor.year}
+            </strong>
+            <button type="button" className="icon-button" onClick={() => move(1)} disabled={isCurrent} aria-label="Next month">
+              ›
+            </button>
           </div>
         </div>
-        <div className="calendar-legend">
-          <span className="legend-item">
-            <span className="legend-dot done">&#10004;</span>Workout done
-          </span>
-          <span className="legend-item">
-            <span className="legend-dot missed">&#10006;</span>No workout
-          </span>
-          <span className="legend-item">
-            <span className="legend-dot today"></span>Today
-          </span>
+
+        <div className="month-summary">
+          <div className="stat-tile stat-tile--compact">
+            <span className="stat-tile__label">Days</span>
+            <span className="stat-tile__value">{summary.days}<small>/ {daysElapsed}</small></span>
+          </div>
+          <div className="stat-tile stat-tile--compact">
+            <span className="stat-tile__label">Time</span>
+            <span className="stat-tile__value">{formatMinutes(summary.minutes)}</span>
+          </div>
+          <div className="stat-tile stat-tile--compact">
+            <span className="stat-tile__label">Hit rate</span>
+            <span className="stat-tile__value">{rate}<small>%</small></span>
+          </div>
+          {breakdown.length ? (
+            <div className="stat-tile stat-tile--compact stat-tile--wide">
+              <span className="stat-tile__label">Top workouts</span>
+              <span className="chips">
+                {breakdown.map((item) => (
+                  <span className="chip" key={item.label}>
+                    {item.label} <b>{item.count}</b>
+                  </span>
+                ))}
+              </span>
+            </div>
+          ) : null}
         </div>
-        <div className="calendar">
-          <div className="month-switch" role="tablist" aria-label="Select month">
-            {months.map((item, index) => (
+
+        <div className="weekdays" aria-hidden="true">
+          {WEEKDAYS.map((day) => (
+            <span key={day}>{day}</span>
+          ))}
+        </div>
+        <div className="month-grid">
+          {cells.map((cell, index) => {
+            if (!cell) return <div key={`empty-${index}`} className="day is-empty" />;
+            const entry = entries.get(cell.dateKey);
+            const isToday = cell.dateKey === today;
+            const isFuture = cell.dateKey > today;
+            const missed = !entry && !isFuture && !isToday;
+            const label = entry
+              ? `${entry.workout}, ${entry.duration}`
+              : isFuture
+                ? "Upcoming"
+                : isToday
+                  ? "Not logged yet"
+                  : "No workout logged";
+            return (
               <button
-                key={item.label}
+                key={cell.dateKey}
                 type="button"
-                role="tab"
-                aria-selected={index === monthIndex}
-                className={`month-tab ${index === monthIndex ? "is-active" : ""}`}
-                onClick={() => setMonthIndex(index)}
+                className={`day ${entry ? "is-done" : ""} ${missed ? "is-missed" : ""} ${isToday ? "is-today" : ""} ${isFuture ? "is-future" : ""}`}
+                disabled={isFuture}
+                onClick={() => onDayClick(cell.dateKey)}
+                aria-label={`${formatLongDate(cell.date)}: ${label}`}
+                title={label}
               >
-                {item.label}
+                <span className="day__num">{cell.date.getDate()}</span>
+                <span className="day__icon" aria-hidden="true">
+                  {entry ? "✓" : isToday ? "•" : missed ? "✕" : ""}
+                </span>
+                <span className="day__meta">{entry ? entry.duration : ""}</span>
               </button>
-            ))}
-          </div>
-          <section className="month-card">
-            <div className="month-title">{month.label} 2026</div>
-            <div className="weekday-row">
-              <span>Mon</span>
-              <span>Tue</span>
-              <span>Wed</span>
-              <span>Thu</span>
-              <span>Fri</span>
-              <span>Sat</span>
-              <span>Sun</span>
-            </div>
-            <div className="month-grid">
-              {month.days.map((date, index) => {
-                if (!date) {
-                  return (
-                    <div
-                      key={`${month.label}-empty-${index}`}
-                      className="day-cell is-empty"
-                    />
-                  );
-                }
-
-                const dateKey = toDateKey(date);
-                const entry = getEntryForDate(user, dateKey);
-                const isToday = dateKey === todayKey;
-                const isFuture = date > todayStart;
-
-                const statusIcon = isToday
-                  ? "\u23f3"
-                  : entry
-                  ? "\u2714"
-                  : !isFuture
-                  ? "\u2716"
-                  : "";
-
-                const isMissed = !entry && !isFuture && !isToday;
-
-                return (
-                  <button
-                    key={dateKey}
-                    type="button"
-                    className={`day-cell${entry ? " is-done" : ""}${
-                      isMissed ? " is-missed" : ""
-                    }${isToday ? " is-today" : ""}${
-                      isFuture ? " is-future" : ""
-                    }`}
-                    aria-label={`${formatLongDate(date)}: ${
-                      entry
-                        ? `${entry.workout}, ${entry.duration}`
-                        : isFuture
-                        ? "Upcoming"
-                        : "No workout logged"
-                    }`}
-                    onClick={() => !isFuture && onDayClick(dateKey)}
-                    disabled={isFuture}
-                  >
-                    <span className="day-number">{date.getDate()}</span>
-                    <span className="day-status">{statusIcon}</span>
-                    <span className="day-duration">
-                      {entry ? entry.duration : ""}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
+            );
+          })}
+        </div>
+        <div className="legend">
+          <span><i className="legend__dot is-done" /> Done</span>
+          <span><i className="legend__dot is-missed" /> Missed</span>
+          <span><i className="legend__dot is-today" /> Today</span>
         </div>
       </section>
     </section>

@@ -1,258 +1,196 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { durationToMinutes, formatLongDate, minutesToDuration, parseDateKey } from "../utils/date.js";
 
-const defaultForm = {
-  workout: "",
-  duration: "",
-  intensity: "Focused",
-  notes: ""
+const WORKOUTS = ["Gym", "Run", "Walk", "Yoga", "Cycling", "HIIT", "Dance", "Sports", "Core", "Swim"];
+const DURATIONS = [
+  { label: "20m", minutes: 20 },
+  { label: "30m", minutes: 30 },
+  { label: "45m", minutes: 45 },
+  { label: "1h", minutes: 60 },
+  { label: "1h 30m", minutes: 90 }
+];
+const INTENSITIES = [
+  { id: "Chill", hint: "Easy, recovery" },
+  { id: "Focused", hint: "Solid effort" },
+  { id: "Beast mode", hint: "All out" }
+];
+
+const splitDuration = (value) => {
+  const minutes = durationToMinutes(value);
+  return { hours: String(Math.floor(minutes / 60)), minutes: String(minutes % 60) };
 };
 
-const parseDurationParts = (value) => {
-  if (!value) return { hours: "", minutes: "" };
-  if (value.includes(":")) {
-    const [hours, minutes] = value.split(":");
-    return {
-      hours: hours.replace(/\D/g, ""),
-      minutes: minutes.replace(/\D/g, "")
-    };
-  }
-  const digits = value.match(/\d+/g);
-  if (!digits) return { hours: "", minutes: "" };
-  if (digits.length >= 2) {
-    return { hours: digits[0], minutes: digits[1] };
-  }
-  return { hours: "", minutes: digits[0] };
-};
-
-const parseDurationToMinutes = (value) => {
-  if (!value || typeof value !== "string") return 0;
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed) return 0;
-  if (trimmed.includes(":")) {
-    const [hours, minutes] = trimmed.split(":");
-    const parsedHours = Number(hours);
-    const parsedMinutes = Number(minutes);
-    if (!Number.isNaN(parsedHours) && !Number.isNaN(parsedMinutes)) {
-      return parsedHours * 60 + parsedMinutes;
-    }
-  }
-  const digits = trimmed.match(/\d+/g);
-  if (!digits) return 0;
-  if (digits.length >= 2) {
-    const parsedHours = Number(digits[0]);
-    const parsedMinutes = Number(digits[1]);
-    if (!Number.isNaN(parsedHours) && !Number.isNaN(parsedMinutes)) {
-      return parsedHours * 60 + parsedMinutes;
-    }
-  }
-  const totalMinutes = Number(digits[0]);
-  return Number.isNaN(totalMinutes) ? 0 : totalMinutes;
-};
-
-const formatDuration = (minutes) => {
-  const clamped = Math.max(0, Math.min(23 * 60 + 59, minutes));
-  const hours = Math.floor(clamped / 60);
-  const mins = clamped % 60;
-  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
-};
-
-const normalizeDuration = (value) => {
-  if (!value) return "";
-  return formatDuration(parseDurationToMinutes(value));
-};
-
-const buildDurationValue = (hours, minutes) => {
-  if (hours === "" && minutes === "") return "";
-  const safeHours = hours === "" ? 0 : Number(hours);
-  const safeMinutes = minutes === "" ? 0 : Number(minutes);
-  if (Number.isNaN(safeHours) || Number.isNaN(safeMinutes)) return "";
-  return formatDuration(safeHours * 60 + safeMinutes);
-};
-
-export default function Modal({
-  isOpen,
-  view,
-  dateKey,
-  isToday,
-  entry,
-  dateLabel,
-  onClose,
-  onEdit,
-  onSave,
-  onDelete
-}) {
-  const [form, setForm] = useState(defaultForm);
+export default function Modal({ isOpen, dateKey, today, entry, userName, saving, onClose, onSave, onDelete }) {
+  const [form, setForm] = useState({ workout: "", hours: "1", minutes: "0", intensity: "Focused", notes: "" });
+  const [error, setError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const firstFieldRef = useRef(null);
 
   useEffect(() => {
-    if (view !== "form") return;
+    if (!isOpen) return;
+    const parts = splitDuration(entry?.duration || "01:00");
     setForm({
       workout: entry?.workout ?? "",
-      duration: normalizeDuration(entry?.duration ?? ""),
+      hours: parts.hours,
+      minutes: parts.minutes,
       intensity: entry?.intensity ?? "Focused",
       notes: entry?.notes ?? ""
     });
-  }, [entry, dateKey, view]);
+    setError("");
+    setConfirmDelete(false);
+    const timer = window.setTimeout(() => firstFieldRef.current?.focus(), 50);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, entry, dateKey]);
 
-  const handleChange = (event) => {
-    const { name, value } = event.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
-  };
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [isOpen, onClose]);
 
-  const handleSubmit = (event) => {
+  const totalMinutes = useMemo(
+    () => (Number(form.hours) || 0) * 60 + (Number(form.minutes) || 0),
+    [form.hours, form.minutes]
+  );
+
+  if (!isOpen || !dateKey) return null;
+
+  const isToday = dateKey === today;
+  const title = entry ? "Edit workout" : isToday ? "Today's workout" : "Log a missed day";
+  const dateLabel = formatLongDate(parseDateKey(dateKey));
+
+  const setField = (name, value) => setForm((prev) => ({ ...prev, [name]: value }));
+
+  const submit = (event) => {
     event.preventDefault();
-    if (!dateKey) return;
+    const workout = form.workout.trim();
+    if (!workout) return setError("Pick or type a workout.");
+    if (totalMinutes <= 0) return setError("Add a duration.");
+    setError("");
     onSave(dateKey, {
-      ...form,
-      duration: normalizeDuration(form.duration)
+      workout,
+      duration: minutesToDuration(totalMinutes),
+      intensity: form.intensity,
+      notes: form.notes.trim()
     });
   };
 
-  const durationParts = parseDurationParts(form.duration);
-  const handleDurationChange = (field) => (event) => {
-    const raw = event.target.value;
-    const max = field === "hours" ? 23 : 59;
-    const nextValue =
-      raw === "" ? "" : String(Math.min(max, Math.max(0, Number(raw))));
-    const nextHours = field === "hours" ? nextValue : durationParts.hours;
-    const nextMinutes = field === "minutes" ? nextValue : durationParts.minutes;
-    const nextDuration = buildDurationValue(nextHours, nextMinutes);
-    setForm((prev) => ({ ...prev, duration: nextDuration }));
-  };
-
   return (
-    <div
-      className={`modal ${isOpen ? "is-open" : ""}`}
-      aria-hidden={!isOpen}
-    >
-      <div className="modal-backdrop" onClick={onClose}></div>
-      <div className="modal-card" role="dialog" aria-modal="true">
-        <button className="modal-close" type="button" onClick={onClose}>
-          x
+    <div className="modal is-open" role="presentation">
+      <div className="modal__backdrop" onClick={onClose} />
+      <div className="modal__card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button className="modal__close" type="button" onClick={onClose} aria-label="Close">
+          ×
         </button>
-        <h3 id="modal-title">
-          {view === "form"
-            ? isToday
-              ? "Today's workout"
-              : entry
-              ? "Edit workout"
-              : "Log missed workout"
-            : view === "details"
-            ? "Workout details"
-            : "Missed workout"}
-        </h3>
-        <p className="muted">{dateLabel}</p>
+        <p className="eyebrow">{userName} · {dateLabel}</p>
+        <h3 id="modal-title">{title}</h3>
 
-        {view === "form" ? (
-          <form className="modal-form" onSubmit={handleSubmit}>
-            <label>
-              <span>Workout type</span>
-              <input
-                name="workout"
-                value={form.workout}
-                onChange={handleChange}
-                type="text"
-                placeholder="Run + core"
-                required
-              />
-            </label>
-            <label>
-              <span>Duration</span>
-              <div className="duration-control">
-                <input
-                  name="duration-hours"
-                  type="number"
-                  min="0"
-                  max="23"
-                  step="1"
-                  value={durationParts.hours}
-                  onChange={handleDurationChange("hours")}
-                  inputMode="numeric"
-                  placeholder="00"
-                  required
-                />
-                <span className="duration-separator">:</span>
-                <input
-                  name="duration-minutes"
-                  type="number"
-                  min="0"
-                  max="59"
-                  step="1"
-                  value={durationParts.minutes}
-                  onChange={handleDurationChange("minutes")}
-                  inputMode="numeric"
-                  placeholder="00"
-                  required
-                />
-              </div>
-            </label>
-            <label>
-              <span>Notes</span>
-              <textarea
-                name="notes"
-                value={form.notes}
-                onChange={handleChange}
-                rows="3"
-                placeholder="How did it feel?"
-              ></textarea>
-            </label>
-            <div className="modal-actions">
-              {entry ? (
+        <form className="form" onSubmit={submit}>
+          <div className="field">
+            <label htmlFor="workout">Workout</label>
+            <div className="chips chips--wrap">
+              {WORKOUTS.map((item) => (
                 <button
-                  className="ghost is-danger"
+                  key={item}
                   type="button"
-                  onClick={() => onDelete(dateKey)}
+                  className={`chip chip--pick ${form.workout === item ? "is-active" : ""}`}
+                  onClick={() => setField("workout", item)}
                 >
-                  Delete entry
+                  {item}
                 </button>
-              ) : null}
-              <button className="ghost" type="button" onClick={onClose}>
-                Cancel
-              </button>
-              <button className="cta" type="submit">
-                Save entry
-              </button>
+              ))}
             </div>
-          </form>
-        ) : (
-          <div className="modal-view">
-            {view === "missed" ? (
-              <p className="missed-note">You missed a entry.</p>
-            ) : (
-              <div className="detail-summary">
-                <div className="detail-line">
-                  <span>Workout</span>
-                  <strong>{entry?.workout}</strong>
-                </div>
-                <div className="detail-line">
-                  <span>Duration</span>
-                  <strong>{entry?.duration}</strong>
-                </div>
-                <div className="detail-line">
-                  <span>Notes</span>
-                  <strong>{entry?.notes || "No notes"}</strong>
-                </div>
-              </div>
-            )}
-            <div className="modal-actions">
-              {view === "details" && entry ? (
+            <input
+              id="workout"
+              ref={firstFieldRef}
+              type="text"
+              value={form.workout}
+              onChange={(event) => setField("workout", event.target.value)}
+              placeholder="Or type your own, e.g. Run + core"
+              maxLength={60}
+            />
+          </div>
+
+          <div className="field">
+            <label>Duration</label>
+            <div className="chips">
+              {DURATIONS.map((item) => (
                 <button
-                  className="ghost is-danger"
+                  key={item.label}
                   type="button"
-                  onClick={() => onDelete(dateKey)}
+                  className={`chip chip--pick ${totalMinutes === item.minutes ? "is-active" : ""}`}
+                  onClick={() => setForm((prev) => ({ ...prev, hours: String(Math.floor(item.minutes / 60)), minutes: String(item.minutes % 60) }))}
                 >
-                  Delete entry
+                  {item.label}
                 </button>
-              ) : null}
-              <button
-                className={`ghost ${view === "missed" ? "is-emphasis" : ""}`}
-                type="button"
-                onClick={onEdit}
-              >
-                {view === "missed" ? "Modify Anyway" : "Edit"}
-              </button>
+              ))}
+            </div>
+            <div className="duration">
+              <label className="duration__part">
+                <input type="number" min="0" max="23" inputMode="numeric" value={form.hours} onChange={(event) => setField("hours", event.target.value.slice(0, 2))} aria-label="Hours" />
+                <span>hr</span>
+              </label>
+              <label className="duration__part">
+                <input type="number" min="0" max="59" inputMode="numeric" value={form.minutes} onChange={(event) => setField("minutes", event.target.value.slice(0, 2))} aria-label="Minutes" />
+                <span>min</span>
+              </label>
             </div>
           </div>
-        )}
+
+          <div className="field">
+            <label>Intensity</label>
+            <div className="seg seg--full" role="radiogroup">
+              {INTENSITIES.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.intensity === item.id}
+                  className={`seg__item ${form.intensity === item.id ? "is-active" : ""}`}
+                  onClick={() => setField("intensity", item.id)}
+                  title={item.hint}
+                >
+                  {item.id}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="field">
+            <label htmlFor="notes">Notes <span className="muted">(optional)</span></label>
+            <textarea id="notes" rows="2" value={form.notes} onChange={(event) => setField("notes", event.target.value)} placeholder="How did it feel?" maxLength={500} />
+          </div>
+
+          {error ? <p className="form-error">{error}</p> : null}
+
+          <div className="modal__actions">
+            {entry ? (
+              confirmDelete ? (
+                <button className="ghost is-danger" type="button" onClick={() => onDelete(dateKey)} disabled={saving}>
+                  Yes, remove it
+                </button>
+              ) : (
+                <button className="ghost is-danger" type="button" onClick={() => setConfirmDelete(true)} disabled={saving}>
+                  Remove
+                </button>
+              )
+            ) : null}
+            <span className="spacer" />
+            <button className="ghost" type="button" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+            <button className="cta" type="submit" disabled={saving}>
+              {saving ? "Saving…" : entry ? "Save changes" : "Save workout"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
